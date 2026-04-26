@@ -6,7 +6,8 @@ import subprocess
 import os
 from scipy.interpolate import splprep, splev
 from build123d import Location, Vector, BuildSketch, Polygon, loft
-
+from shapely.geometry import MultiLineString, GeometryCollection
+import matplotlib.pyplot as plt
 # ==========================================
 # STEP 1: PYTHON MATH & CAD LOGIC
 # ==========================================
@@ -15,15 +16,18 @@ from build123d import Location, Vector, BuildSketch, Polygon, loft
 def get_osm_centerline(road_name, town, country):
     """Substep 1.1: Fetches 1D centerline from OpenStreetMap."""
     query = f"{road_name}, {town}, {country}"
-    G = ox.graph_from_address(query, network_type="drive")
+    distance = 5000
+    G = ox.graph_from_address(query, distance, network_type="drive")
     gdf_edges = ox.graph_to_gdfs(G, nodes=False)
 
     road_edges = gdf_edges[gdf_edges["name"] == road_name]
     if road_edges.empty:
         raise ValueError(f"Road '{road_name}' not found.")
 
-    line = road_edges.geometry.unary_union
-    if line.geom_type == "MultiLineString":
+    line = road_edges.geometry.union_all()
+    # Check if it's a collection (which has the .geoms attribute)
+    if isinstance(line, (MultiLineString, GeometryCollection)):
+        # Now the type checker knows .geoms exists
         line = max(line.geoms, key=lambda a: a.length)
 
     return np.array(list(line.coords))
@@ -43,6 +47,48 @@ def fetch_elevations_and_project(lon_lat_points):
     x, y = utm_proj(lon_lat_points[:, 0], lon_lat_points[:, 1])
 
     return np.column_stack((x, y, z_coords))
+
+
+def plot_centerline_raw(coords, road_name="Road"):
+    """
+    Plots the raw coordinate array and saves it to a PNG file.
+    """
+    if coords.size == 0:
+        print("Error: Coordinate array is empty.")
+        return
+
+    # Extract Longitude (X) and Latitude (Y)
+    x = coords[:, 0]
+    y = coords[:, 1]
+
+    # Create the figure and axis explicitly
+    fig, ax = plt.subplots(figsize=(12, 10))
+
+    # 1. Plot the path
+    ax.plot(x, y, color="#1f77b4", linewidth=2, label="Path Sequence")
+    ax.scatter(x, y, color="black", s=5, alpha=0.3)
+
+    # 2. Mark Start/End
+    ax.scatter(x[0], y[0], color="green", s=100, label="Start", zorder=5)
+    ax.scatter(x[-1], y[-1], color="red", s=100, label="End", zorder=5)
+
+    # 3. Label some indices for sequence verification
+    step = max(1, len(coords) // 20)
+    for i in range(0, len(coords), step):
+        ax.annotate(str(i), (x[i], y[i]), fontsize=8, alpha=0.7)
+
+    ax.set_aspect("equal")
+    ax.set_title(f"Diagnostic Plot: {road_name}")
+    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.legend()
+
+    # --- THE FIX ---
+    filename = "road_diagnostic.png"
+    # Use the figure object directly to save
+    fig.savefig(filename, dpi=300, bbox_inches="tight")
+
+    print(f"\n✅ Diagnostic plot successfully saved to: {os.path.abspath(filename)}")
+    plt.close(fig)  # Clean up memory
 
 
 def calculate_frenet_frames(points_3d, target_speed_ms=25.0, samples=500):
@@ -181,27 +227,29 @@ if __name__ == "__main__":
         # Phase 1: CAD Logic
         print("1.1 Fetching centerline...")
         pts_wgs84 = get_osm_centerline(ROAD, TOWN, COUNTRY)
+        print(pts_wgs84)
+        plot_centerline_raw(pts_wgs84)
 
-        print(
-            "1.2 Fetching elevations (Slicing to first 50 points to prevent API rate limits)..."
-        )
-        pts_3d = fetch_elevations_and_project(pts_wgs84[:50])
+        # print(
+        #    "1.2 Fetching elevations (Slicing to first 50 points to prevent API rate limits)..."
+        # )
+        # pts_3d = fetch_elevations_and_project(pts_wgs84[:50])
 
-        print("1.3 Calculating dynamic banking frames...")
-        frames = calculate_frenet_frames(pts_3d, target_speed_ms=SPEED_MS)
+        # print("1.3 Calculating dynamic banking frames...")
+        # frames = calculate_frenet_frames(pts_3d, target_speed_ms=SPEED_MS)
 
-        print("1.4 Generating mathematically continuous CAD solid...")
-        track_cad = build_cad_solid(frames)
+        # print("1.4 Generating mathematically continuous CAD solid...")
+        # track_cad = build_cad_solid(frames)
 
         # Phase 2: Mesh Triangulation
-        print("2.1 Discretizing CAD solid to STL mesh...")
-        export_solid_to_stl(track_cad, TMP_STL, mesh_tolerance=0.05)
+        # print("2.1 Discretizing CAD solid to STL mesh...")
+        # export_solid_to_stl(track_cad, TMP_STL, mesh_tolerance=0.05)
 
         # Phase 3: Blender Conversion
-        print("3.1 Initiating Blender FBX processing...")
-        trigger_blender_conversion(TMP_STL, FINAL_FBX, blender_executable=BLENDER_PATH)
+        # print("3.1 Initiating Blender FBX processing...")
+        # trigger_blender_conversion(TMP_STL, FINAL_FBX, blender_executable=BLENDER_PATH)
 
-        print("\nPIPELINE COMPLETE.")
+        # print("\nPIPELINE COMPLETE.")
 
     except Exception as e:
         print(f"Pipeline failed: {e}")
